@@ -13,8 +13,9 @@ import os
 import struct
 import sys
 
-SOURCE = "entry.png"
-DEST_DIR = "/output"
+HERE = os.path.dirname(os.path.abspath(__file__))
+SOURCE = os.path.join(HERE, "entry.png")
+DEST_DIR = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
 DEST = os.path.join(DEST_DIR, "entry.png")
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -64,8 +65,8 @@ def read_png_header(data):
 def main():
     if not os.path.isfile(SOURCE):
         fail(
-            f"{SOURCE} not found in the current directory "
-            f"({os.getcwd()}); the image must sit next to main.py"
+            f"{SOURCE} not found next to main.py; "
+            f"the image must sit next to main.py"
         )
 
     with open(SOURCE, "rb") as handle:
