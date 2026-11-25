@@ -1,79 +1,103 @@
 #!/usr/bin/env python3
-"""Entry point for the 'Sum up 24 November's world news in one image' entry.
+"""Copy the v2 front-page image to /output/entry.png and validate it.
 
-Copies the bundled front-page image (entry.png, sitting next to this file)
-to /output/entry.png. Standard library only, no network, deterministic:
-the output is a byte-for-byte copy of the input.
-
-Usage:
-    python3 main.py
+The image itself (entry.png) is generated separately; this program only
+checks that it is a well-formed 1024x1024 PNG of at most 1 MiB, copies it
+to /output/entry.png, and prints its SHA-256 so the result can be checked
+against the submitted file. Standard library only, no network.
 """
 
+import binascii
 import hashlib
 import os
-import shutil
 import struct
 import sys
 
-SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "entry.png")
-OUTPUT_DIR = "/output"
-OUTPUT = os.path.join(OUTPUT_DIR, "entry.png")
+SOURCE = "entry.png"
+DEST_DIR = "/output"
+DEST = os.path.join(DEST_DIR, "entry.png")
 
-MAX_BYTES = 1024 * 1024  # 1 MiB
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 EXPECTED_WIDTH = 1024
 EXPECTED_HEIGHT = 1024
+MAX_BYTES = 1024 * 1024  # 1 MiB
 
 
-def png_dimensions(path: str) -> tuple:
-    """Return (width, height) from a PNG file's IHDR chunk, stdlib only."""
-    with open(path, "rb") as f:
-        header = f.read(33)
-    if len(header) < 33 or header[:8] != b"\x89PNG\r\n\x1a\n":
-        raise ValueError(f"not a PNG file: {path}")
-    if header[12:16] != b"IHDR":
-        raise ValueError(f"PNG missing IHDR chunk: {path}")
-    width, height = struct.unpack(">II", header[16:24])
+def fail(message):
+    print(f"error: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def read_png_header(data):
+    """Return (width, height) from the IHDR chunk of a PNG byte string."""
+    if len(data) < 8 or data[:8] != PNG_SIGNATURE:
+        fail("entry.png is not a PNG file (bad signature)")
+    if len(data) < 33:
+        fail("entry.png is too short to contain an IHDR chunk")
+    chunk_length = struct.unpack(">I", data[8:12])[0]
+    chunk_type = data[12:16]
+    if chunk_type != b"IHDR" or chunk_length != 13:
+        fail("entry.png has no valid IHDR chunk as its first chunk")
+    stored_crc = struct.unpack(">I", data[29:33])[0]
+    actual_crc = binascii.crc32(data[12:29]) & 0xFFFFFFFF
+    if stored_crc != actual_crc:
+        fail(
+            f"entry.png IHDR chunk is corrupt (CRC {stored_crc:08x}, "
+            f"expected {actual_crc:08x})"
+        )
+    width, height = struct.unpack(">II", data[16:24])
+    bit_depth = data[24]
+    color_type = data[25]
+    # Valid (color type, bit depth) pairs per the PNG specification.
+    # The generated image may be palette-based (type 3), so every legal
+    # combination is accepted; only malformed headers are rejected.
+    valid_depths = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8),
+                    4: (8, 16), 6: (8, 16)}
+    if color_type not in valid_depths or bit_depth not in valid_depths[color_type]:
+        fail(
+            f"entry.png has invalid IHDR color type {color_type} with "
+            f"bit depth {bit_depth}"
+        )
     return width, height
 
 
-def sha256_file(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def main() -> int:
+def main():
     if not os.path.isfile(SOURCE):
-        print(f"error: source image not found: {SOURCE}", file=sys.stderr)
-        return 1
-    try:
-        width, height = png_dimensions(SOURCE)
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        fail(
+            f"{SOURCE} not found in the current directory "
+            f"({os.getcwd()}); the image must sit next to main.py"
+        )
+
+    with open(SOURCE, "rb") as handle:
+        data = handle.read()
+
+    if len(data) > MAX_BYTES:
+        fail(
+            f"entry.png is {len(data)} bytes, over the 1 MiB limit "
+            f"({MAX_BYTES} bytes)"
+        )
+
+    width, height = read_png_header(data)
     if (width, height) != (EXPECTED_WIDTH, EXPECTED_HEIGHT):
-        print(
-            f"error: {SOURCE} is {width}x{height}, "
-            f"expected {EXPECTED_WIDTH}x{EXPECTED_HEIGHT}",
-            file=sys.stderr,
+        fail(
+            f"entry.png is {width}x{height}, expected "
+            f"{EXPECTED_WIDTH}x{EXPECTED_HEIGHT}"
         )
-        return 1
-    size = os.path.getsize(SOURCE)
-    if size > MAX_BYTES:
-        print(
-            f"error: {SOURCE} is {size} bytes, over the {MAX_BYTES} byte limit",
-            file=sys.stderr,
-        )
-        return 1
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    shutil.copyfile(SOURCE, OUTPUT)
-    print(f"copied {SOURCE} -> {OUTPUT}")
-    print(f"size: {size} bytes, dimensions: {width}x{height}")
-    print(f"sha256: {sha256_file(OUTPUT)}")
-    return 0
+
+    os.makedirs(DEST_DIR, exist_ok=True)
+    with open(DEST, "wb") as handle:
+        handle.write(data)
+
+    # Re-read what was written and confirm it is byte-identical.
+    with open(DEST, "rb") as handle:
+        written = handle.read()
+    if written != data:
+        fail(f"{DEST} does not match {SOURCE} after writing")
+
+    digest = hashlib.sha256(data).hexdigest()
+    print(f"wrote {DEST} ({len(data)} bytes, {width}x{height})")
+    print(f"sha256: {digest}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
